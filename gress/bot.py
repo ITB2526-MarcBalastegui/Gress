@@ -1,3 +1,6 @@
+import asyncio
+from gress.interprete import interpretar
+from gress.calendario import crear_evento, proximos_eventos
 import logging
 from telegram import Update
 from telegram.ext import (
@@ -34,10 +37,51 @@ async def tiempo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(tiempo_barcelona())
 
 
-async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # De momento repite. Aquí irá luego lo de "apunta que..."
-    await update.message.reply_text(f"Recibido: {update.message.text}")
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
+
+async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    r = interpretar(update.message.text)
+
+    if r is None:
+        await update.message.reply_text(
+            "No te he entendido. Empieza con 'apunta que...' o 'recuérdame...'."
+        )
+        return
+    if not r["titulo"]:
+        await update.message.reply_text("¿Qué quieres que apunte?")
+        return
+    if r["fecha"] is None:
+        await update.message.reply_text(
+            f"Vale, '{r['titulo']}', pero ¿para cuándo? Dímelo en la frase, por ejemplo 'apunta que el lunes...'."
+        )
+        return
+
+    try:
+        # La API de Google es bloqueante; la ejecutamos aparte para no congelar el bot
+        await asyncio.to_thread(crear_evento, r["titulo"], r["fecha"], r["con_hora"])
+    except Exception:
+        log.exception("Error creando evento")
+        await update.message.reply_text("No he podido crear el evento. Mira los logs.")
+        return
+
+    f = r["fecha"]
+    cuando = f"{DIAS[f.weekday()]} {f.strftime('%d/%m/%Y')}"
+    if r["con_hora"]:
+        cuando += f" a las {f.strftime('%H:%M')}"
+    await update.message.reply_text(f"Apuntado: {r['titulo']}, {cuando}.")
+
+
+async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    eventos = await asyncio.to_thread(proximos_eventos, 5)
+    if not eventos:
+        await update.message.reply_text("No tienes eventos próximos.")
+        return
+    lineas = []
+    for e in eventos:
+        inicio = e["start"].get("dateTime", e["start"].get("date"))
+        lineas.append(f"• {inicio[:16].replace('T', ' ')}  {e.get('summary', '(sin título)')}")
+    await update.message.reply_text("Próximos eventos:\n" + "\n".join(lineas))
 
 async def intruso(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario = update.effective_user
@@ -52,9 +96,10 @@ def main():
     app.add_handler(CommandHandler("tiempo", tiempo, filters=SOLO_MARC))
     app.add_handler(MessageHandler(SOLO_MARC & filters.TEXT & ~filters.COMMAND, texto))
     app.add_handler(MessageHandler(~SOLO_MARC, intruso))
-
+    app.add_handler(CommandHandler("agenda", agenda, filters=SOLO_MARC))
     log.info("Gress arrancado, esperando mensajes...")
     app.run_polling()
+    
 
 
 if __name__ == "__main__":
