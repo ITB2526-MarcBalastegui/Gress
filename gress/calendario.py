@@ -1,5 +1,7 @@
 import os
 import datetime
+from zoneinfo import ZoneInfo
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -8,6 +10,7 @@ from googleapiclient.discovery import build
 # Permiso solo para ver y crear eventos, no para tocar la configuración del calendario
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 TZ = "Europe/Madrid"
+MADRID = ZoneInfo(TZ)
 
 
 def get_service():
@@ -34,6 +37,20 @@ def proximos_eventos(n=5):
         singleEvents=True, orderBy="startTime",
     ).execute()
     return resultado.get("items", [])
+
+
+def eventos_entre(desde, hasta):
+    resultado = get_service().events().list(
+        calendarId="primary", timeMin=desde.isoformat(), timeMax=hasta.isoformat(),
+        singleEvents=True, orderBy="startTime",
+    ).execute()
+    return resultado.get("items", [])
+
+
+def eventos_de_hoy():
+    ahora = datetime.datetime.now(MADRID)
+    inicio = ahora.replace(hour=0, minute=0, second=0, microsecond=0)
+    return eventos_entre(inicio, inicio + datetime.timedelta(days=1))
 
 
 def crear_evento(titulo, inicio, con_hora):

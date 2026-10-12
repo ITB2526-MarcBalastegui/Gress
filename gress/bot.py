@@ -1,7 +1,7 @@
 import asyncio
-from gress.interprete import interpretar
-from gress.calendario import crear_evento, proximos_eventos
+import datetime
 import logging
+
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -10,22 +10,32 @@ from telegram.ext import (
 
 from gress.config import TELEGRAM_TOKEN, CHAT_ID
 from gress.tiempo import tiempo_barcelona
+from gress.interprete import interpretar
+from gress.calendario import crear_evento, proximos_eventos, MADRID
+from gress.avisos import resumen_manana, comprobar_proximos, texto_resumen
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     level=logging.INFO,
 )
-log = logging.getLogger("gress")
+# httpx registra las URLs completas, que incluyen el token. Lo silenciamos.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+log = logging.getLogger("gress")
+
 # Solo acepta mensajes de tu chat
 SOLO_MARC = filters.Chat(chat_id=CHAT_ID)
+
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Gress en línea.\n"
         "/ping - comprobar que estoy vivo\n"
-        "/tiempo - previsión de hoy"
+        "/tiempo - previsión de hoy\n"
+        "/agenda - próximos eventos\n"
+        "/resumen - resumen del día\n\n"
+        "Para apuntar algo: 'apunta que mañana...' o 'recuérdame el viernes a las 17:00...'"
     )
 
 
@@ -34,10 +44,36 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def tiempo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(tiempo_barcelona())
+    texto = await asyncio.to_thread(tiempo_barcelona)
+    await update.message.reply_text(texto)
 
 
-DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        eventos = await asyncio.to_thread(proximos_eventos, 5)
+    except Exception:
+        log.exception("Error leyendo la agenda")
+        await update.message.reply_text("No he podido leer el calendario. Mira los logs.")
+        return
+
+    if not eventos:
+        await update.message.reply_text("No tienes eventos próximos.")
+        return
+
+    lineas = []
+    for e in eventos:
+        inicio = e["start"].get("dateTime", e["start"].get("date"))
+        lineas.append(f"• {inicio[:16].replace('T', ' ')}  {e.get('summary', '(sin título)')}")
+    await update.message.reply_text("Próximos eventos:\n" + "\n".join(lineas))
+
+
+async def resumen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        texto = await asyncio.to_thread(texto_resumen)
+    except Exception:
+        log.exception("Error preparando el resumen")
+        texto = "No he podido preparar el resumen. Mira los logs."
+    await update.message.reply_text(texto)
 
 
 async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -53,7 +89,8 @@ async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if r["fecha"] is None:
         await update.message.reply_text(
-            f"Vale, '{r['titulo']}', pero ¿para cuándo? Dímelo en la frase, por ejemplo 'apunta que el lunes...'."
+            f"Vale, '{r['titulo']}', pero ¿para cuándo? "
+            "Dímelo en la frase, por ejemplo 'apunta que el lunes...'."
         )
         return
 
@@ -72,17 +109,6 @@ async def texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Apuntado: {r['titulo']}, {cuando}.")
 
 
-async def agenda(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    eventos = await asyncio.to_thread(proximos_eventos, 5)
-    if not eventos:
-        await update.message.reply_text("No tienes eventos próximos.")
-        return
-    lineas = []
-    for e in eventos:
-        inicio = e["start"].get("dateTime", e["start"].get("date"))
-        lineas.append(f"• {inicio[:16].replace('T', ' ')}  {e.get('summary', '(sin título)')}")
-    await update.message.reply_text("Próximos eventos:\n" + "\n".join(lineas))
-
 async def intruso(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usuario = update.effective_user
     log.warning("Mensaje ignorado de %s (id %s)", usuario.username, usuario.id)
@@ -91,15 +117,24 @@ async def intruso(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # Comandos
     app.add_handler(CommandHandler("start", start, filters=SOLO_MARC))
     app.add_handler(CommandHandler("ping", ping, filters=SOLO_MARC))
     app.add_handler(CommandHandler("tiempo", tiempo, filters=SOLO_MARC))
+    app.add_handler(CommandHandler("agenda", agenda, filters=SOLO_MARC))
+    app.add_handler(CommandHandler("resumen", resumen, filters=SOLO_MARC))
+
+    # Mensajes de texto
     app.add_handler(MessageHandler(SOLO_MARC & filters.TEXT & ~filters.COMMAND, texto))
     app.add_handler(MessageHandler(~SOLO_MARC, intruso))
-    app.add_handler(CommandHandler("agenda", agenda, filters=SOLO_MARC))
+
+    # Tareas programadas
+    jq = app.job_queue
+    jq.run_daily(resumen_manana, time=datetime.time(7, 30, tzinfo=MADRID), name="resumen_manana")
+    jq.run_repeating(comprobar_proximos, interval=300, first=10, name="avisos_eventos")
+
     log.info("Gress arrancado, esperando mensajes...")
     app.run_polling()
-    
 
 
 if __name__ == "__main__":
