@@ -1,0 +1,16 @@
+# Secretos
+.env
+*.pem
+*.key
+credentials.json
+token.json
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Datos locales
+*.db
+*.sqlite
+logs/
