@@ -6,14 +6,11 @@ from telegram.ext import ContextTypes
 from gress.config import CHAT_ID
 from gress.tiempo import tiempo_barcelona
 from gress.calendario import eventos_de_hoy, eventos_entre, MADRID
+from gress import memoria
 
 log = logging.getLogger("gress")
 
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
-
-# Eventos de los que ya ha avisado, para no repetir.
-# Se vacía al reiniciar el bot (más adelante lo guardaremos en SQLite).
-AVISADOS = set()
 
 
 def formatear_evento(e):
@@ -39,6 +36,11 @@ def texto_resumen():
         partes += [formatear_evento(e) for e in eventos]
     else:
         partes.append("No tienes nada en el calendario hoy.")
+
+    pendientes = memoria.recordatorios_pendientes()
+    if pendientes:
+        partes.append("")
+        partes.append(f"Tienes {len(pendientes)} recordatorio(s) pendiente(s). Usa /recordatorios.")
     return "\n".join(partes)
 
 
@@ -49,6 +51,9 @@ async def resumen_manana(context: ContextTypes.DEFAULT_TYPE):
         log.exception("Error preparando el resumen de la mañana")
         texto = "Buenos días. No he podido preparar el resumen, revisa los logs."
     await context.bot.send_message(chat_id=CHAT_ID, text=texto)
+
+    # Aprovecha para limpiar avisos antiguos una vez al día
+    await asyncio.to_thread(memoria.limpiar_avisados)
 
 
 async def comprobar_proximos(context: ContextTypes.DEFAULT_TYPE):
@@ -63,15 +68,21 @@ async def comprobar_proximos(context: ContextTypes.DEFAULT_TYPE):
 
     for e in eventos:
         # Ignora eventos de todo el día y los ya avisados
-        if "dateTime" not in e["start"] or e["id"] in AVISADOS:
+        if "dateTime" not in e["start"] or memoria.ya_avisado(e["id"]):
             continue
         inicio = datetime.datetime.fromisoformat(e["start"]["dateTime"])
         if inicio < ahora:
             continue  # Ya ha empezado
         minutos = int((inicio - ahora).total_seconds() // 60)
-        AVISADOS.add(e["id"])
         await context.bot.send_message(
             chat_id=CHAT_ID,
             text=f"En {minutos} min: {e.get('summary', '(sin título)')} "
                  f"({inicio.astimezone(MADRID).strftime('%H:%M')})",
         )
+        memoria.marcar_avisado(e["id"])
+
+
+async def enviar_recordatorios(context: ContextTypes.DEFAULT_TYPE):
+    for rec in memoria.recordatorios_vencidos():
+        await context.bot.send_message(chat_id=CHAT_ID, text=f"Recordatorio: {rec['texto']}")
+        memoria.marcar_enviado(rec["id"])
