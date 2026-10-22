@@ -16,7 +16,8 @@ load_dotenv()
 logging.basicConfig(format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO)
 log = logging.getLogger("cazador")
 
-NOMBRE = "gress-01"
+NOMBRE = os.getenv("OCI_NAME", "gress-01")
+SHAPE = os.getenv("OCI_SHAPE", "VM.Standard.A1.Flex")
 INTERVALO = 300  # segundos entre intentos (5 min)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -25,8 +26,8 @@ COMPARTMENT = os.getenv("OCI_COMPARTMENT")
 AD = os.getenv("OCI_AD")
 SUBNET = os.getenv("OCI_SUBNET")
 IMAGE = os.getenv("OCI_IMAGE")
-OCPUS = float(os.getenv("OCI_OCPUS", "2"))
-MEMORY = float(os.getenv("OCI_MEMORY", "12"))
+OCPUS = float(os.getenv("OCI_OCPUS", "4"))
+MEMORY = float(os.getenv("OCI_MEMORY", "24"))
 SSH_PUBKEY = os.getenv("SSH_PUBKEY")
 
 config = oci.config.from_file()
@@ -54,14 +55,20 @@ def ya_existe():
 def detalles():
     with open(SSH_PUBKEY) as f:
         clave = f.read().strip()
+
+    # Solo las shapes "Flex" permiten elegir CPU y RAM. La Micro tiene tamaño fijo.
+    shape_config = None
+    if SHAPE.endswith(".Flex"):
+        shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
+            ocpus=OCPUS, memory_in_gbs=MEMORY
+        )
+
     return oci.core.models.LaunchInstanceDetails(
         compartment_id=COMPARTMENT,
         availability_domain=AD,
         display_name=NOMBRE,
-        shape="VM.Standard.A1.Flex",
-        shape_config=oci.core.models.LaunchInstanceShapeConfigDetails(
-            ocpus=OCPUS, memory_in_gbs=MEMORY
-        ),
+        shape=SHAPE,
+        shape_config=shape_config,
         source_details=oci.core.models.InstanceSourceViaImageDetails(
             image_id=IMAGE, source_type="image"
         ),
@@ -83,7 +90,7 @@ def main():
         log.info("Ya existe una instancia llamada %s. No hago nada.", NOMBRE)
         return
 
-    log.info("Buscando capacidad para %s OCPU y %s GB...", OCPUS, MEMORY)
+    log.info("Buscando capacidad para %s (%s)...", NOMBRE, SHAPE)
     intento = 0
     while True:
         intento += 1
